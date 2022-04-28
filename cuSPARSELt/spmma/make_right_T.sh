@@ -1,0 +1,1 @@
+nvcc -I/jingzhuangzhuang/nvidia/cuda-11.3/bin/../include -I/jingzhuangzhuang/liminghao03/libcusparse_lt/include spmma_example_right_transpose.cpp -o spmma_example_right_transpose -L/jingzhuangzhuang/liminghao03/libcusparse_lt/lib64 -lcusparseLt -lcudart -lcusparse -ldl /jingzhuangzhuang/nvidia/cuda-11.3/targets/"x86_64-linux"/lib/libnvrtc.so
