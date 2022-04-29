@@ -46,6 +46,8 @@
  * comments to the code, the above Disclaimer and U.S. Government End
  * Users Notice.
  */
+//#include "stdafx.h"
+#include <bitset>
 #include <iostream>
 #include <cuda_runtime_api.h> // cudaMalloc, cudaMemcpy, etc.
 #include <cusparseLt.h>       // cusparseLt header
@@ -89,7 +91,7 @@ int main(void) {
     }
     // Host problem definition, row-major order
     constexpr int m     = 16; // b * s
-    constexpr int n     = 32; // output dim
+    constexpr int n     = 8; // output dim
     constexpr int k     = 16; // input dim
     auto          order = CUSPARSE_ORDER_ROW;
     auto          opA   = CUSPARSE_OPERATION_NON_TRANSPOSE;
@@ -120,12 +122,14 @@ int main(void) {
     __half hB[k * n];
     __half hC[m * n] = {};
     for (int i = 0; i < m * k; i=i+1) {
+        // hA[i] = static_cast<__half>(static_cast<float>(std::rand() % 10) / 5.29f);
         hA[i] = static_cast<__half>(static_cast<float>(1.0));
         // hA[i+1] = static_cast<__half>(static_cast<float>(0.0));
     }
     std::cout << "original weights: ";
     for (int i = 0; i < k * n; i=i+2) {
-        hB[i] = static_cast<__half>(static_cast<float>(std::rand() % 10) / 3.3f);
+        // hB[i] = static_cast<__half>(static_cast<float>(std::rand() % 10) / 4.78f);
+        hB[i] = static_cast<__half>(static_cast<float>(1.0));
         hB[i+1] = static_cast<__half>(static_cast<float>(0.0));
         std::cout << hB[i] << " " << hB[i+1] << " ";
     }
@@ -155,17 +159,17 @@ int main(void) {
     CHECK_CUSPARSE( cusparseLtInit(&handle) )
     // matrix descriptor initialization
     CHECK_CUSPARSE( cusparseLtStructuredDescriptorInit(
-                                            &handle, &matB, num_B_rows,
-                                            num_B_cols, ldb, alignment,
+                                            &handle, &matB, n,
+                                            k, k, alignment,
                                             type, order,
                                             CUSPARSELT_SPARSITY_50_PERCENT) )
     CHECK_CUSPARSE( cusparseLtDenseDescriptorInit(
-                                            &handle, &matA, num_A_rows,
-                                            num_A_cols, lda, alignment,
+                                            &handle, &matA, m,
+                                            k, k, alignment,
                                             type, order) )
     CHECK_CUSPARSE( cusparseLtDenseDescriptorInit(
-                                            &handle, &matC, num_C_rows,
-                                            num_C_cols, ldc, alignment,
+                                            &handle, &matC, m,
+                                            n, n, alignment,
                                             type, order) )
     // matmul, algorithm selection, and plan initialization
     CHECK_CUSPARSE( cusparseLtMatmulDescriptorInit(
@@ -187,23 +191,6 @@ int main(void) {
     CHECK_CUSPARSE( cusparseLtMatmulPlanInit(&handle, &plan, &matmul, &alg_sel,
                                              workspace_size) )
     //--------------------------------------------------------------------------
-    // Prune the A matrix (in-place) and check the correcteness
-    /*
-    CHECK_CUSPARSE( cusparseLtSpMMAPrune(&handle, &matmul, dA, dA,
-                                         CUSPARSELT_PRUNE_SPMMA_TILE, stream) )
-    CHECK_CUSPARSE( cusparseLtSpMMAPruneCheck(&handle, &matmul, dA,
-                                              d_valid, stream) )
-    int is_valid;
-    CHECK_CUDA( cudaMemcpyAsync(&is_valid, d_valid, sizeof(d_valid),
-                                cudaMemcpyDeviceToHost, stream) )
-    CHECK_CUDA( cudaStreamSynchronize(stream) )
-    if (is_valid != 0) {
-        std::printf("!!!! The matrix has been pruned in a wrong way. "
-                    "cusparseLtMatmul will not provide correct results\n");
-        return EXIT_FAILURE;
-    }
-    */
-    //--------------------------------------------------------------------------
     // Compress the A matrix
     CHECK_CUSPARSE( cusparseLtSpMMACompressedSize(&handle, &plan,
                                                   &compressed_size) )
@@ -218,8 +205,20 @@ int main(void) {
     std::cout << compressed_size;
     CHECK_CUDA( cudaMemcpy(B_compressed, dB_compressed, compressed_size, cudaMemcpyDeviceToHost) )
     std::cout << "compressed weights: ";
-    for (int i=0; i<128; i++) {
-      std::cout << " " << static_cast<float>(static_cast<__half*>(B_compressed)[i]);
+    // B_compressed: 64 half values + 64 2bit values
+    for (int i=0; i<64; i=i+4) {
+      // tmp is the current 8-bit char (correspoding to 4 non-zero values)
+      unsigned char tmp = reinterpret_cast<unsigned char*>(B_compressed+64)[i/4];
+      std::bitset<8> x(tmp);
+      std::cout << x;
+      std::cout << " " << static_cast<float>(reinterpret_cast<__half*>(B_compressed)[i]);
+      std::cout << "(" << (x >> 6) << ")";
+      std::cout << " " << static_cast<float>(reinterpret_cast<__half*>(B_compressed)[i+1]);
+      std::cout << "(" << (x << 2 >> 6) << ")";
+      std::cout << " " << static_cast<float>(reinterpret_cast<__half*>(B_compressed)[i+2]);
+      std::cout << "(" << (x << 4 >> 6) << ")";
+      std::cout << " " << static_cast<float>(reinterpret_cast<__half*>(B_compressed)[i+3]);
+      std::cout << "(" << (x << 6 >> 6) << ")";
     }
     std::cout << std::endl;
     
@@ -254,6 +253,7 @@ int main(void) {
             for (int k1 = 0; k1 < k; k1++) {
                 auto posA = (A_std_layout) ? i * lda + k1 : i + k1 * lda;
                 auto posB = (B_std_layout) ? k1 * ldb + j : k1 + j * ldb;
+                // std::cout << "m: " << i << " n: " << j << " k: " << k1 << " value: " << hB[posB] << std::endl;
                 sum      += static_cast<float>(hA[posA]) *  // [i][k]
                             static_cast<float>(hB[posB]);   // [k][j]
             }
