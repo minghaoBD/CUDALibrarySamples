@@ -208,7 +208,7 @@ int main(void) {
     // B_compressed: 64 half values + 64 2bit values
     for (int i=0; i<64; i=i+4) {
       // tmp is the current 8-bit char (correspoding to 4 non-zero values)
-      unsigned char tmp = reinterpret_cast<unsigned char*>(B_compressed+64)[i/4];
+      unsigned char tmp = reinterpret_cast<unsigned char*>(reinterpret_cast<__half*>(B_compressed)+64)[i/4];
       std::bitset<8> x(tmp);
       std::cout << x;
       std::cout << " " << static_cast<float>(reinterpret_cast<__half*>(B_compressed)[i]);
