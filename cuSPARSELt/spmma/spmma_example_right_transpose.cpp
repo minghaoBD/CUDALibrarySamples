@@ -121,6 +121,8 @@ int main(void) {
     float hA[m * k];
     float hB[k * n];
     float hC[m * n] = {};
+    float hBias[n] = {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0};
+
     for (int i = 0; i < 128; i=i+1) {
         hA[4*i] = static_cast<float>(static_cast<float>(1.0));
         hA[4*i+1] = static_cast<float>(static_cast<float>(2.0));
@@ -148,17 +150,19 @@ int main(void) {
     float beta  = 0.0f;
     //--------------------------------------------------------------------------
     // Device memory management
-    float *dA, *dB, *dC, *dD, *dB_compressed;
+    float *dA, *dB, *dC, *dD, *dB_compressed, *dBias;
     int    *d_valid;
     CHECK_CUDA( cudaMalloc((void**) &dA, A_size) )
     CHECK_CUDA( cudaMalloc((void**) &dB, B_size) )
     CHECK_CUDA( cudaMalloc((void**) &dC, C_size) )
+    CHECK_CUDA( cudaMalloc((void**) &dBias, sizeof(float)*n) )
     CHECK_CUDA( cudaMalloc((void**) &d_valid, sizeof(d_valid)) )
     dD = dC;
 
     CHECK_CUDA( cudaMemcpy(dA, hA, A_size, cudaMemcpyHostToDevice) )
     CHECK_CUDA( cudaMemcpy(dB, hB, B_size, cudaMemcpyHostToDevice) )
     CHECK_CUDA( cudaMemcpy(dC, hC, C_size, cudaMemcpyHostToDevice) )
+    CHECK_CUDA( cudaMemcpy(dBias, hBias, sizeof(float)*n, cudaMemcpyHostToDevice) )
     //--------------------------------------------------------------------------
     cusparseLtHandle_t             handle;
     cusparseLtMatDescriptor_t      matA, matB, matC;
@@ -166,6 +170,7 @@ int main(void) {
     cusparseLtMatmulAlgSelection_t alg_sel;
     cusparseLtMatmulPlan_t         plan;
     cudaStream_t                   stream = nullptr;
+    size_t compressed_size;
     CHECK_CUSPARSE( cusparseLtInit(&handle) )
     // matrix descriptor initialization
     CHECK_CUSPARSE( cusparseLtStructuredDescriptorInit(
@@ -173,6 +178,20 @@ int main(void) {
                                             k, k, alignment,
                                             type, order,
                                             CUSPARSELT_SPARSITY_50_PERCENT) )
+
+
+    CHECK_CUSPARSE( cusparseLtSpMMACompressedSize2(&handle, &matB,
+                                                            &compressed_size) )
+    CHECK_CUDA( cudaMalloc((void**) &dB_compressed, compressed_size) )
+    CHECK_CUSPARSE( cusparseLtSpMMACompress2(
+      &handle, &matB, 0, CUSPARSE_OPERATION_TRANSPOSE, dB, dB_compressed, stream))
+    CHECK_CUSPARSE( cusparseLtMatDescriptorDestroy(&matB) )
+    CHECK_CUSPARSE( cusparseLtStructuredDescriptorInit(
+                                            &handle, &matB, n,
+                                            k, k, alignment,
+                                            type, order,
+                                            CUSPARSELT_SPARSITY_50_PERCENT) )
+
     CHECK_CUSPARSE( cusparseLtDenseDescriptorInit(
                                             &handle, &matA, m,
                                             k, k, alignment,
@@ -186,6 +205,10 @@ int main(void) {
                                             &handle, &matmul, opA, opB,
                                             &matA, &matB, &matC, &matC,
                                             compute_type) )
+
+    CHECK_CUSPARSE( cusparseLtMatmulDescSetAttribute(
+        &handle, &matmul, CUSPARSELT_MATMUL_BIAS_POINTER, &dBias, sizeof(dBias)) )
+
     CHECK_CUSPARSE( cusparseLtMatmulAlgSelectionInit(
                                             &handle, &alg_sel, &matmul,
                                             CUSPARSELT_MATMUL_ALG_DEFAULT) )
@@ -194,7 +217,7 @@ int main(void) {
                                             &handle, &alg_sel,
                                             CUSPARSELT_MATMUL_ALG_CONFIG_ID,
                                             &alg, sizeof(alg)))
-    size_t workspace_size, compressed_size;
+    size_t workspace_size;
     CHECK_CUSPARSE( cusparseLtMatmulGetWorkspace(&handle, &alg_sel,
                                                  &workspace_size))
 
@@ -202,12 +225,13 @@ int main(void) {
                                              workspace_size) )
     //--------------------------------------------------------------------------
     // Compress the A matrix
-    CHECK_CUSPARSE( cusparseLtSpMMACompressedSize(&handle, &plan,
-                                                  &compressed_size) )
-    CHECK_CUDA( cudaMalloc((void**) &dB_compressed, compressed_size) )
+    // CHECK_CUSPARSE( cusparseLtSpMMACompressedSize(&handle, &plan,
+    //                                               &compressed_size) )
+    // CHECK_CUDA( cudaMalloc((void**) &dB_compressed, compressed_size) )
 
-    CHECK_CUSPARSE( cusparseLtSpMMACompress(&handle, &plan, dB,
-                                            dB_compressed, stream) )
+    // CHECK_CUSPARSE( cusparseLtSpMMACompress(&handle, &plan, dB,
+    //                                       dB_compressed, stream) )
+
     //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
     // check d_compressed
@@ -268,7 +292,7 @@ int main(void) {
                             static_cast<float>(hB[posB]);   // [k][j]
             }
             auto posC       = (is_rowmajor) ? i * ldc + j : i + j * ldc;
-            hC_result[posC] = sum;  // [i][j]
+            hC_result[posC] = sum + hBias[j];  // [i][j]
         }
     }
     // host-device comparison
@@ -282,10 +306,10 @@ int main(void) {
             auto host_value   = hC_result[pos];
             if (device_value != host_value) {
                 // direct floating point comparison is not reliable
-                std::printf("(%d, %d):\t%f vs. %f\n",
-                            i, j, host_value, device_value);
+                // std::printf("(%d, %d):\t%f vs. %f\n",
+                //             i, j, host_value, device_value);
                 correct = 0;
-                break;
+                // break;
             }
         }
     }
@@ -299,6 +323,7 @@ int main(void) {
     CHECK_CUDA( cudaFree(dA) )
     CHECK_CUDA( cudaFree(dB) )
     CHECK_CUDA( cudaFree(dC) )
+    CHECK_CUDA( cudaFree(dBias) )
     CHECK_CUDA( cudaFree(d_valid) )
     return EXIT_SUCCESS;
 }
