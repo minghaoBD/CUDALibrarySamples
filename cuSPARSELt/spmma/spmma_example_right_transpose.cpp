@@ -91,13 +91,13 @@ int main(void) {
     }
     // Host problem definition, row-major order
     constexpr int m     = 16; // b * s
-    constexpr int n     = 8; // output dim
-    constexpr int k     = 16; // input dim
+    constexpr int n     = 16; // output dim
+    constexpr int k     = 32; // input dim
     auto          order = CUSPARSE_ORDER_ROW;
     auto          opA   = CUSPARSE_OPERATION_NON_TRANSPOSE;
     auto          opB   = CUSPARSE_OPERATION_TRANSPOSE;
-    auto          type  = CUDA_R_16F;
-    auto          compute_type = CUSPARSE_COMPUTE_16F;
+    auto          type  = CUDA_R_32F;
+    auto          compute_type = CUSPARSE_COMPUTE_TF32;
 
     bool     is_rowmajor    = (order == CUSPARSE_ORDER_ROW); // true
     bool     isA_transposed = (opA != CUSPARSE_OPERATION_NON_TRANSPOSE); // false
@@ -115,30 +115,40 @@ int main(void) {
     auto     A_height       = (is_rowmajor) ? num_A_rows : num_A_cols;   // Arow
     auto     B_height       = (is_rowmajor) ? num_B_rows : num_B_cols;   // Brow
     auto     C_height       = (is_rowmajor) ? num_C_rows : num_C_cols;   // Crow
-    auto     A_size         = A_height * lda * sizeof(__half);           // Arow * Acol * half
-    auto     B_size         = B_height * ldb * sizeof(__half);           // Brow * Bcol * half
-    auto     C_size         = C_height * ldc * sizeof(__half);           // Crow * Ccol * half
-    __half hA[m * k];
-    __half hB[k * n];
-    __half hC[m * n] = {};
-    for (int i = 0; i < m * k; i=i+1) {
-        // hA[i] = static_cast<__half>(static_cast<float>(std::rand() % 10) / 5.29f);
-        hA[i] = static_cast<__half>(static_cast<float>(1.0));
-        // hA[i+1] = static_cast<__half>(static_cast<float>(0.0));
+    auto     A_size         = A_height * lda * sizeof(float);           // Arow * Acol * half
+    auto     B_size         = B_height * ldb * sizeof(float);           // Brow * Bcol * half
+    auto     C_size         = C_height * ldc * sizeof(float);           // Crow * Ccol * half
+    float hA[m * k];
+    float hB[k * n];
+    float hC[m * n] = {};
+    for (int i = 0; i < 128; i=i+1) {
+        hA[4*i] = static_cast<float>(static_cast<float>(1.0));
+        hA[4*i+1] = static_cast<float>(static_cast<float>(2.0));
+        hA[4*i+2] = static_cast<float>(static_cast<float>(3.0));
+        hA[4*i+3] = static_cast<float>(static_cast<float>(4.0));
     }
     std::cout << "original weights: ";
-    for (int i = 0; i < k * n; i=i+2) {
-        // hB[i] = static_cast<__half>(static_cast<float>(std::rand() % 10) / 4.78f);
-        hB[i] = static_cast<__half>(static_cast<float>(1.0));
-        hB[i+1] = static_cast<__half>(static_cast<float>(0.0));
-        std::cout << hB[i] << " " << hB[i+1] << " ";
+    for (int i = 0; i < 128; i=i+1) {
+        if (i % 16 <= 7) {
+        hB[4*i] = static_cast<float>(static_cast<float>(1.0));
+        hB[4*i+1] = static_cast<float>(static_cast<float>(0.0));
+        hB[4*i+2] = static_cast<float>(static_cast<float>(0.0));
+        hB[4*i+3] = static_cast<float>(static_cast<float>(4.0));
+        } else {
+        hB[4*i] = static_cast<float>(static_cast<float>(0.0));
+        hB[4*i+1] = static_cast<float>(static_cast<float>(2.0));
+        hB[4*i+2] = static_cast<float>(static_cast<float>(3.0));
+        hB[4*i+3] = static_cast<float>(static_cast<float>(0.0));
+        } 
+        
+        std::cout << hB[4*i] << " " << hB[4*i+1] << " " << hB[4*i+2] << " " << hB[4*i+3] << " ";
     }
     std::cout << std::endl;
     float alpha = 1.0f;
     float beta  = 0.0f;
     //--------------------------------------------------------------------------
     // Device memory management
-    __half *dA, *dB, *dC, *dD, *dB_compressed;
+    float *dA, *dB, *dC, *dD, *dB_compressed;
     int    *d_valid;
     CHECK_CUDA( cudaMalloc((void**) &dA, A_size) )
     CHECK_CUDA( cudaMalloc((void**) &dB, B_size) )
@@ -208,17 +218,17 @@ int main(void) {
     // B_compressed: 64 half values + 64 2bit values
     for (int i=0; i<64; i=i+4) {
       // tmp is the current 8-bit char (correspoding to 4 non-zero values)
-      unsigned char tmp = reinterpret_cast<unsigned char*>(reinterpret_cast<__half*>(B_compressed)+64)[i/4];
+      unsigned char tmp = reinterpret_cast<unsigned char*>(reinterpret_cast<float*>(B_compressed)+64)[i/4];
       std::bitset<8> x(tmp);
-      std::cout << x;
-      std::cout << " " << static_cast<float>(reinterpret_cast<__half*>(B_compressed)[i]);
-      std::cout << "(" << (x >> 6) << ")";
-      std::cout << " " << static_cast<float>(reinterpret_cast<__half*>(B_compressed)[i+1]);
-      std::cout << "(" << (x << 2 >> 6) << ")";
-      std::cout << " " << static_cast<float>(reinterpret_cast<__half*>(B_compressed)[i+2]);
-      std::cout << "(" << (x << 4 >> 6) << ")";
-      std::cout << " " << static_cast<float>(reinterpret_cast<__half*>(B_compressed)[i+3]);
-      std::cout << "(" << (x << 6 >> 6) << ")";
+      // std::cout << x;
+      std::cout << " " << static_cast<float>(reinterpret_cast<float*>(B_compressed)[i]);
+      // std::cout << "(" << (x >> 6) << ")";
+      std::cout << " " << static_cast<float>(reinterpret_cast<float*>(B_compressed)[i+1]);
+      // std::cout << "(" << (x << 2 >> 6) << ")";
+      std::cout << " " << static_cast<float>(reinterpret_cast<float*>(B_compressed)[i+2]);
+      // std::cout << "(" << (x << 4 >> 6) << ")";
+      std::cout << " " << static_cast<float>(reinterpret_cast<float*>(B_compressed)[i+3]);
+      // std::cout << "(" << (x << 6 >> 6) << ")";
     }
     std::cout << std::endl;
     
@@ -262,11 +272,13 @@ int main(void) {
         }
     }
     // host-device comparison
+    std::cout << "outputs:";
     int correct = 1;
     for (int i = 0; i < m; i++) {
         for (int j = 0; j < n; j++) {
             auto pos          = (is_rowmajor) ? i * ldc + j : i + j * ldc;
             auto device_value = static_cast<float>(hC[pos]);
+            std::cout << " " << device_value; 
             auto host_value   = hC_result[pos];
             if (device_value != host_value) {
                 // direct floating point comparison is not reliable
