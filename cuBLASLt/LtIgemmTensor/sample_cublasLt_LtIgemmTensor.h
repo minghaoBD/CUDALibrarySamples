@@ -42,5 +42,6 @@ void LtIgemmTensor(cublasLtHandle_t ltHandle,
                    int lda,
                    const int8_t *B,
                    int ldb,
-                   int32_t *C,
-                   int ldc);
+                   float *C,
+                   int ldc,
+                   cudaStream_t stream);

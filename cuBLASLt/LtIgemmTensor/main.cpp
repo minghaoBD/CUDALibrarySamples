@@ -35,7 +35,8 @@
 #include "helpers.h"
 
 int main() {
-    TestBench<int8_t, int32_t> props(4, 4, 4);
+    // m n k
+    TestBench<int8_t, float> props(32, 32, 32);
 
     props.run([&props] {
         LtIgemmTensor(props.ltHandle,
@@ -47,7 +48,8 @@ int main() {
                     props.Bdev,
                     props.k,
                     props.Cdev,
-                    props.m);
+                    props.m,
+                    props.stream);
     });
 
     return 0;

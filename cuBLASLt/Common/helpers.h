@@ -32,9 +32,18 @@
 #include <stdexcept>
 #include <vector>
 #include <functional>
-
+#include <iostream>
 #include <cublasLt.h>
 #include <cuda_runtime_api.h>
+
+static inline __device__ int8_t float_to_int8_rn(float x)
+{
+  uint32_t dst;
+  asm volatile("cvt.rni.sat.s8.f32 %0, %1;"
+               : "=r"(dst)
+               : "f"(x));
+  return reinterpret_cast<const int8_t &>(dst);
+}
 
 inline void checkCudaStatus(cudaError_t status) {
     if (status != cudaSuccess) {
@@ -56,7 +65,7 @@ struct TestBench {
 
     TestBench(int m, int n, int k, ComputeType alpha = 0.0f, ComputeType beta = 0.0f, size_t workspaceSize = 1024 * 1024 * 4, int N = 1) :
         m(m), n(n), k(k), N(N), alpha(alpha), beta(beta), workspaceSize(workspaceSize), Ahost(m * k * N), Bhost(n * k * N),
-        Chost(m * n * N), biasHost(m * N) {
+        Chost(m * n * 1), biasHost(m * N) {
         checkCublasStatus(cublasLtCreate(&ltHandle));
         checkCudaStatus(cudaMalloc(reinterpret_cast<void**>(&Adev), m * k * N * sizeof(InType)));
         checkCudaStatus(cudaMalloc(reinterpret_cast<void**>(&Bdev), n * k * N  * sizeof(InType)));
@@ -79,9 +88,34 @@ struct TestBench {
     }
 
     void fillData() {
-        for (int i = 0; i < m * k * N; i++) Ahost[i] = InType(i);
-        for (int i = 0; i < n * k * N; i++) Bhost[i] = InType(i);
-        for (int i = 0; i < m * N; i++) biasHost[i] = InType(i + 1);
+        // for (int i = 0; i < m * k * N; i++) Ahost[i] = InType(i);
+        // for (int i = 0; i < n * k * N; i++) Bhost[i] = InType(i);
+        
+        for (int i = 0; i < m; i++) {
+          for (int j = 0; j < k; j++) {
+            Ahost[i * k + j] = static_cast<InType>(j);
+          }
+        }
+        for (int i = 0; i < k; i++) {
+          for (int j = 0; j < n; j++) {
+            Bhost[i * n + j] = static_cast<InType>(j);
+          }
+        }
+        
+        for (int i = 0; i < m * N; i++) biasHost[i] = static_cast<InType>(0);
+        
+        std::cout << "A:";
+        std::cout << Ahost.size();        
+        for (int i=0; i<Ahost.size(); i++) {
+            std::cout << " " << static_cast<int>(Ahost.at(i));
+        }
+        std::cout << std::endl;
+        std::cout << "B:";
+        std::cout << Bhost.size();        
+        for (int i=0; i<Bhost.size(); i++) {
+            std::cout << " " << static_cast<int>(Bhost.at(i));
+        }
+        std::cout << std::endl;
     }
 
     void copyDataToDevice() {
@@ -92,6 +126,12 @@ struct TestBench {
 
     void copyDataFromDevice() {
         checkCudaStatus(cudaMemcpyAsync(Chost.data(), Cdev, Chost.size() * sizeof(Chost[0]), cudaMemcpyDeviceToHost, stream));
+        std::cout << "output:";
+        std::cout << Chost.size();        
+        for (int i=0; i<Chost.size(); i++) {
+            std::cout << " " << Chost.at(i);
+        }
+        std::cout << std::endl;
     }
 
     void streamSynchronize() {
